@@ -15,6 +15,7 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.inventory.ClickType;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
+import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
@@ -29,6 +30,7 @@ public class MirTimeAuction extends JavaPlugin implements CommandExecutor, TabCo
     private AuctionData data;
 
     private final Map<UUID, Integer> playerPages = new HashMap<>();
+    private final Map<UUID, CurrencyFilter> playerCurrencies = new HashMap<>();
     private final Map<UUID, Category> playerCategories = new HashMap<>();
     private final Map<UUID, SortType> playerSorts = new HashMap<>();
     private final Map<UUID, Map<Integer, AuctionLot>> lotSlotMaps = new HashMap<>();
@@ -60,6 +62,14 @@ public class MirTimeAuction extends JavaPlugin implements CommandExecutor, TabCo
         if (data != null) data.save();
     }
 
+    @EventHandler
+    public void onJoin(PlayerJoinEvent e) {
+        Bukkit.getScheduler().runTaskLater(this, () -> {
+            if (e.getPlayer().isOnline()) {
+                data.claimPendingTokens(e.getPlayer());
+            }
+        }, 40L);
+    }
     @Override
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
@@ -69,6 +79,11 @@ public class MirTimeAuction extends JavaPlugin implements CommandExecutor, TabCo
         }
         if (args.length == 2 && (args[0].equalsIgnoreCase("sell") || args[0].equalsIgnoreCase("продать"))) {
             return List.of("1000", "5000", "25000", "100000");
+        }
+        if (args.length == 3 && (args[0].equalsIgnoreCase("sell") || args[0].equalsIgnoreCase("продать"))) {
+            return List.of("money", "tk", "тк").stream()
+                    .filter(s -> s.startsWith(args[2].toLowerCase()))
+                    .toList();
         }
         return List.of();
     }
@@ -100,7 +115,7 @@ public class MirTimeAuction extends JavaPlugin implements CommandExecutor, TabCo
         }
         if (sub.equals("sell") || sub.equals("продать")) {
             if (args.length < 2) {
-                p.sendMessage(color("&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8» &fИспользование: &#00FF66/ah sell <цена>"));
+                p.sendMessage(color("&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8» &fИспользование: &#00FF66/ah sell <цена> [tk]"));
                 return true;
             }
             long price;
@@ -110,8 +125,18 @@ public class MirTimeAuction extends JavaPlugin implements CommandExecutor, TabCo
                 p.sendMessage(color("&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8» &cУкажите корректную цену числом!"));
                 return true;
             }
-            if (price < 10 || price > 10_000_000_000L) {
-                p.sendMessage(color("&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8» &cЦена должна быть от &#00FF66$10 &cдо &#00FF66$10,000,000,000&c!"));
+
+            boolean isTokens = false;
+            if (args.length >= 3) {
+                String curArg = args[2].toLowerCase();
+                if (curArg.equals("tk") || curArg.equals("тк") || curArg.equals("tokens") || curArg.equals("токены")) {
+                    isTokens = true;
+                }
+            }
+
+            long minPrice = isTokens ? 1L : 10L;
+            if (price < minPrice || price > 10_000_000_000L) {
+                p.sendMessage(color("&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8» &cНекорректная цена!"));
                 return true;
             }
 
@@ -134,16 +159,16 @@ public class MirTimeAuction extends JavaPlugin implements CommandExecutor, TabCo
 
             long now = System.currentTimeMillis();
             String id = UUID.randomUUID().toString().substring(0, 8);
-            AuctionLot lot = new AuctionLot(id, p.getUniqueId(), p.getName(), toSell, price, now, now + LOT_DURATION_MS);
+            AuctionLot lot = new AuctionLot(id, p.getUniqueId(), p.getName(), toSell, price, isTokens, now, now + LOT_DURATION_MS);
             data.activeLots.add(lot);
             data.save();
 
             p.playSound(p.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1f, 1.3f);
-            p.sendMessage(color("&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8» &fПредмет выставлен на продажу за &#00FF66$" + fmt(price) + " &8(&7Слоты: " + (active + 1) + "/" + max + "&8)"));
+            p.sendMessage(color("&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8» &fПредмет выставлен на продажу за " + lot.formattedPrice() + " &8(&7Слоты: " + (active + 1) + "/" + max + "&8)"));
             return true;
         }
 
-        p.sendMessage(color("&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8» &fКоманды: &#00FF66/ah &7| &#00FF66/ah sell <цена> &7| &#00FF66/ah my &7| &#00FF66/ah rent"));
+        p.sendMessage(color("&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8» &fКоманды: &#00FF66/ah &7| &#00FF66/ah sell <цена> [tk] &7| &#00FF66/ah my &7| &#00FF66/ah rent"));
         return true;
     }
 
@@ -157,12 +182,13 @@ public class MirTimeAuction extends JavaPlugin implements CommandExecutor, TabCo
     public void openMainMenu(Player p) {
         UUID id = p.getUniqueId();
         int page = playerPages.getOrDefault(id, 0);
+        CurrencyFilter cur = playerCurrencies.getOrDefault(id, CurrencyFilter.ALL);
         Category cat = playerCategories.getOrDefault(id, Category.ALL);
         SortType sort = playerSorts.getOrDefault(id, SortType.NEWEST);
 
         List<AuctionLot> filtered = new ArrayList<>();
         for (AuctionLot lot : data.activeLots) {
-            if (cat.matches(lot.item)) filtered.add(lot);
+            if (cur.matches(lot) && cat.matches(lot.item)) filtered.add(lot);
         }
 
         switch (sort) {
@@ -184,6 +210,14 @@ public class MirTimeAuction extends JavaPlugin implements CommandExecutor, TabCo
 
         Inventory inv = createInv(MenuType.MAIN, "&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8| &fСтр. &#00FF66" + (page + 1) + "&8/&f" + totalPages);
 
+        // Кнопка переключения раздела валюты: Все / За Монеты / За Токены
+        inv.setItem(2, makeItem(cur.icon, "&#0055ff[$] &#00E5FFРаздел: &#00FF66" + cur.display, List.of(
+                "&7Переключение между лотами",
+                "&7за &#00FF66Монеты ($) &7и за &#00E5FFТокены (ТК)&7.",
+                "",
+                "&#00FF66➥ Нажмите&f, чтобы сменить раздел"
+        )));
+
         inv.setItem(3, makeItem(cat.icon, "&#0055ff[★] &#00E5FFКатегория: &#00FF66" + cat.display, List.of(
                 "&7Фильтр предметов на аукционе.",
                 "",
@@ -191,8 +225,8 @@ public class MirTimeAuction extends JavaPlugin implements CommandExecutor, TabCo
         )));
 
         inv.setItem(4, makeItem(Material.BOOK, "&#0055ff[i] &#00E5FF&lКак выставить товар?", List.of(
-                "&7Возьмите предмет в руку и введите:",
-                "&#00FF66/ah sell <цена>",
+                "&7За монеты: &#00FF66/ah sell <цена>",
+                "&7За токены: &#00E5FF/ah sell <цена> tk",
                 "",
                 "&#0055ff● &fВаши слоты: &#00FF66" + data.getActiveCount(id) + "&7/&#00E5FF" + data.getMaxSlots(p),
                 "&#0055ff● &fАрендовано доп. слотов: &#00FF66+" + data.getRentedSlots(id)
@@ -244,7 +278,7 @@ public class MirTimeAuction extends JavaPlugin implements CommandExecutor, TabCo
                 lore.add("");
                 lore.add(color("&#0055ff&m                              "));
                 lore.add(color(" &#0055ff● &fПродавец: &#00E5FF" + lot.sellerName));
-                lore.add(color(" &#0055ff● &fЦена: &#00FF66&l$" + fmt(lot.price)));
+                lore.add(color(" &#0055ff● &fЦена: " + lot.formattedPrice()));
                 lore.add(color(" &#0055ff● &fОсталось: &7" + formatTimeLeft(lot.expiresAt - System.currentTimeMillis())));
                 lore.add(color("&#0055ff&m                              "));
                 if (lot.sellerId.equals(id)) {
@@ -286,7 +320,7 @@ public class MirTimeAuction extends JavaPlugin implements CommandExecutor, TabCo
             if (meta != null) {
                 List<String> lore = meta.hasLore() && meta.getLore() != null ? new ArrayList<>(meta.getLore()) : new ArrayList<>();
                 lore.add("");
-                lore.add(color(" &#0055ff● &fЦена: &#00FF66$" + fmt(lot.price)));
+                lore.add(color(" &#0055ff● &fЦена: " + lot.formattedPrice()));
                 lore.add(color(" &#0055ff● &fОсталось: &7" + formatTimeLeft(lot.expiresAt - System.currentTimeMillis())));
                 lore.add(color("&c➥ Нажмите&f, чтобы снять с продажи"));
                 meta.setLore(lore);
@@ -387,7 +421,7 @@ public class MirTimeAuction extends JavaPlugin implements CommandExecutor, TabCo
         inv.setItem(22, lot.item.clone());
         inv.setItem(20, makeItem(Material.LIME_STAINED_GLASS_PANE, "&#00FF66&l[✔ ПОДТВЕРДИТЬ ПОКУПКУ]", List.of(
                 " &#0055ff● &fПродавец: &#00E5FF" + lot.sellerName,
-                " &#0055ff● &fСпишется: &#00FF66&l$" + fmt(lot.price),
+                " &#0055ff● &fСпишется: " + lot.formattedPrice(),
                 "",
                 "&#00FF66➥ Нажмите&f, чтобы купить товар"
         )));
@@ -419,6 +453,13 @@ public class MirTimeAuction extends JavaPlugin implements CommandExecutor, TabCo
 
         switch (holder.getType()) {
             case MAIN -> {
+                if (slot == 2) {
+                    playerCurrencies.put(id, playerCurrencies.getOrDefault(id, CurrencyFilter.ALL).next());
+                    playerPages.put(id, 0);
+                    p.playSound(p.getLocation(), Sound.UI_BUTTON_CLICK, 1f, 1.2f);
+                    openMainMenu(p);
+                    return;
+                }
                 if (slot == 3) {
                     playerCategories.put(id, playerCategories.getOrDefault(id, Category.ALL).next());
                     playerPages.put(id, 0);
@@ -584,18 +625,30 @@ public class MirTimeAuction extends JavaPlugin implements CommandExecutor, TabCo
                         openMainMenu(p);
                         return;
                     }
-                    if (!data.getEcon().has(p, lot.price)) {
-                        p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_NO, 1f, 1f);
-                        p.sendMessage(color("&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8» &cУ вас недостаточно монет для покупки!"));
-                        openMainMenu(p);
-                        return;
-                    }
 
-                    data.activeLots.remove(lot);
-                    data.getEcon().withdrawPlayer(p, lot.price);
-                    OfflinePlayer seller = Bukkit.getOfflinePlayer(lot.sellerId);
-                    data.getEcon().depositPlayer(seller, lot.price);
-                    data.save();
+                    if (lot.isTokens) {
+                        if (!data.takeTokens(p, lot.price)) {
+                            p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_NO, 1f, 1f);
+                            p.sendMessage(color("&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8» &cНедостаточно токенов! Додеп: &#00E5FF&ndon.mir-time.ru"));
+                            openMainMenu(p);
+                            return;
+                        }
+                        data.activeLots.remove(lot);
+                        data.giveTokens(lot.sellerId, lot.sellerName, lot.price);
+                        data.save();
+                    } else {
+                        if (!data.getEcon().has(p, lot.price)) {
+                            p.playSound(p.getLocation(), Sound.ENTITY_VILLAGER_NO, 1f, 1f);
+                            p.sendMessage(color("&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8» &cУ вас недостаточно монет для покупки!"));
+                            openMainMenu(p);
+                            return;
+                        }
+                        data.activeLots.remove(lot);
+                        data.getEcon().withdrawPlayer(p, lot.price);
+                        OfflinePlayer seller = Bukkit.getOfflinePlayer(lot.sellerId);
+                        data.getEcon().depositPlayer(seller, lot.price);
+                        data.save();
+                    }
 
                     HashMap<Integer, ItemStack> left = p.getInventory().addItem(lot.item.clone());
                     for (ItemStack drop : left.values()) {
@@ -604,12 +657,12 @@ public class MirTimeAuction extends JavaPlugin implements CommandExecutor, TabCo
 
                     p.closeInventory();
                     p.playSound(p.getLocation(), Sound.ENTITY_PLAYER_LEVELUP, 1f, 1.2f);
-                    p.sendMessage(color("&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8» &#00FF66Покупка успешна! &fВы купили товар у &#00E5FF" + lot.sellerName + " &fза &#00FF66$" + fmt(lot.price)));
+                    p.sendMessage(color("&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8» &#00FF66Покупка успешна! &fВы купили товар у &#00E5FF" + lot.sellerName + " &fза " + lot.formattedPrice()));
 
-                    if (seller.isOnline() && seller.getPlayer() != null) {
-                        Player onlineSeller = seller.getPlayer();
+                    Player onlineSeller = Bukkit.getPlayer(lot.sellerId);
+                    if (onlineSeller != null && onlineSeller.isOnline()) {
                         onlineSeller.playSound(onlineSeller.getLocation(), Sound.ENTITY_EXPERIENCE_ORB_PICKUP, 1f, 1.3f);
-                        onlineSeller.sendMessage(color("&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8» &fИгрок &#00E5FF" + p.getName() + " &fкупил ваш лот за &#00FF66$" + fmt(lot.price) + "&f!"));
+                        onlineSeller.sendMessage(color("&#0055ff&l⚡ &#00E5FF&lАУКЦИОН &8» &fИгрок &#00E5FF" + p.getName() + " &fкупил ваш лот за " + lot.formattedPrice() + "&f!"));
                     }
                 }
             }
