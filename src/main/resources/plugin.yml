@@ -1,0 +1,24 @@
+name: MirTimeAuction
+version: '1.0.0'
+main: ru.mirtime.auction.MirTimeAuction
+api-version: '1.21'
+depend:
+  - Vault
+softdepend:
+  - PlayerPoints
+  - PlaceholderAPI
+  - LuckPerms
+
+commands:
+  ah:
+    description: Открыть аукцион сервера Mir-Time
+    aliases: [auc, auction, аукцион, аук]
+    permission: mirtime.ah.use
+
+permissions:
+  mirtime.ah.use:
+    description: Доступ к аукциону
+    default: true
+  mirtime.ah.admin:
+    description: Удаление чужих лотов с аукциона (Шифт+ПКМ)
+    default: op
